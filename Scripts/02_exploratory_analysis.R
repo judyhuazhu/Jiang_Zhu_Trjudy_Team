@@ -44,3 +44,34 @@ autoplot(fc_tbats) +
 accuracy(as.numeric(fc_tbats$mean), valid_data$daily_avg)
 
 # current MAPE is 11.31%, retrain on all data and generate one sample submission
+full_train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2011-06-30"))
+
+ts_full_msts <- msts(
+  full_train_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+final_fit <- tbats(
+  ts_full_msts,
+  use.box.cox = NULL,
+  use.trend = TRUE,
+  use.damped.trend = TRUE
+)
+
+final_fc <- forecast(final_fit, h = 31)
+
+# build submission file
+
+submission <- data.frame(
+  date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
+  load = as.numeric(final_fc$mean)
+)
+
+write.csv(
+  submission,
+  file = "Output/submission_basic_tbats.csv",
+  row.names = FALSE,
+  quote = TRUE
+)
