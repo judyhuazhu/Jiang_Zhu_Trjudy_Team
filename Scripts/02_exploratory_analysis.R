@@ -14,32 +14,33 @@ valid_data <- data_all %>%
            date <= as.Date("2010-07-31"))
 
 # create msts object for training data
-ts_train <- msts(
+ts_train_msts <- msts(
   train_data$daily_avg,
   seasonal.periods = c(7, 365)
 )
 
 # validation series only for plotting
-ts_valid <- msts(
+ts_valid_msts <- msts(
   valid_data$daily_avg,
   seasonal.periods = c(7, 365)
 )
 
 # quick plot of training series
-autoplot(ts_train) +
+autoplot(ts_train_msts) +
   ggtitle("Training Daily Electricity Load")
 
 # baseline model: TBATS
-fit_tbats <- tbats(ts_train)
+fit_tbats <- tbats(ts_train_msts)
 
 # forecast 31 days for validation period
 fc_tbats <- forecast(fit_tbats, h = 31)
 
 # plot forecast vs actual validation data
 autoplot(fc_tbats) +
-  autolayer(ts_valid, series = "Actual") +
+  autolayer(ts_valid_msts, series = "Actual") +
   ggtitle("TBATS Forecast vs Actuals")
 
 # accuracy on validation set
 accuracy(as.numeric(fc_tbats$mean), valid_data$daily_avg)
 
+# current MAPE is 11.31%, retrain on all data and generate one sample submission
