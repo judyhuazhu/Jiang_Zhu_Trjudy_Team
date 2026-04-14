@@ -68,7 +68,7 @@ submission <- data.frame(
   date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
   load = as.numeric(final_fc$mean)
 )
-
+dir.create("Output", showWarnings = FALSE)
 write.csv(
   submission,
   file = "Output/submission_basic_tbats.csv",

@@ -4,9 +4,7 @@ library(tidyverse)
 library(lubridate)
 library(forecast)
 library(readr)
-
-# load processed data
-source("Scripts/01_read_all_data.R")
+library(here)
 ```
 
 ```{r}
@@ -150,43 +148,8 @@ print(results)
 # plot best validation forecast
 best_model_name <- results$model[1]
 ```
-
 ```{r}
-if (best_model_name == "TBATS") {
-  best_fc_valid <- fc_tbats
-} else if (best_model_name == "ETS+S") {
-  best_fc_valid <- fc_stlf
-} else {
-  best_fc_valid <- best_dhr$fc
-}
-
-autoplot(best_fc_valid) +
-  autolayer(ts_valid_msts, series = "Actual") +
-  ggtitle(paste("Best Validation Forecast:", best_model_name))
-
-# 9) Retrain best model on full data through 2011-06-30
-h_final <- 31
-
-if (best_model_name == "TBATS") {
-
-  final_fit <- tbats(
-    ts_full_msts,
-    use.box.cox = NULL,
-    use.trend = TRUE,
-    use.damped.trend = TRUE,
-    seasonal.periods = c(7, 365.25)
-  )
-
-  final_fc <- forecast(final_fit, h = h_final)
-
-} else if (best_model_name == "ETS") {
-
-  ts_full_weekly <- ts(full_train_data$daily_avg, frequency = 7)
-  final_fit <- ets(ts_full_weekly)
-  final_fc <- forecast(final_fit, h = h_final)
-
-} else {
-
+# ARIMA + Fourier is performing the best
   final_xreg_train <- fourier(
     ts_full_msts,
     K = c(best_dhr$K_week, best_dhr$K_year)
@@ -208,50 +171,22 @@ if (best_model_name == "TBATS") {
     biasadj = TRUE
   )
 
-  final_fc <- forecast(final_fit, xreg = final_xreg_future, h = h_final)
-}
-
-# 10) Build July 2011 forecast table
-forecast_dates <- seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day")
-
-forecast_output <- tibble(
-  date = forecast_dates,
-  forecast = as.numeric(final_fc$mean)
-)
-
-print(forecast_output)
-
-# 11) Match Kaggle submission template
-template_path <- "Output/submission_template.csv"
-template <- read_csv(template_path, show_col_types = FALSE)
-
-print(names(template))
-
-# Try to match the template automatically
-submission <- template
-
-
-if (ncol(template) == 2) {
-  submission[[1]] <- forecast_output$date
-  submission[[2]] <- forecast_output$forecast
-} else {
-  # if more columns exist, update likely prediction column
-  date_col <- names(template)[str_detect(names(template), regex("date|id", ignore_case = TRUE))]
-  pred_col <- names(template)[str_detect(names(template), regex("forecast|demand|load|prediction", ignore_case = TRUE))]
-
-  if (length(date_col) >= 1) submission[[date_col[1]]] <- forecast_output$date
-  if (length(pred_col) >= 1) submission[[pred_col[1]]] <- forecast_output$forecast
-}
-
-# 12) Write submission file
-write_csv(submission, "Output/group_submission_july2011.csv")
-
-cat("\nSubmission file written to: Output/group_submission_july2011.csv\n")
-cat("Best validation model:", best_model_name, "\n")
-
-if (best_model_name == "DHR_ARIMA") {
-  cat("Chosen Fourier terms: weekly K =", best_dhr$K_week,
-      ", yearly K =", best_dhr$K_year, "\n")
-}
+final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
 ```
+
+```{r}
+# build submission file
+submission <- data.frame(
+  date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
+  load = as.numeric(final_fc$mean)
+)
+dir.create("Output", showWarnings = FALSE)
+write.csv(
+  submission,
+  file = here("Output", "submission_arima_fourier.csv"),
+  row.names = FALSE,
+  quote = TRUE
+)
+```
+
 

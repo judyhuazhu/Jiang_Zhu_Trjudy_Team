@@ -1,6 +1,7 @@
 library(readxl)
 library(tidyverse)
-
+library(here)
+read_excel(here("Data", "load.xlsx"))
 load <- read_excel("Data/load.xlsx")
 temp <- read_excel("Data/temperature.xlsx")
 humidity <- read_excel("Data/relative_humidity.xlsx")
@@ -74,3 +75,4 @@ data_all <- daily_load %>%
 head(data_all)
 str(data_all)
 colSums(is.na(data_all))
+
