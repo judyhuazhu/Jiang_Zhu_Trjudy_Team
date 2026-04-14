@@ -1,0 +1,88 @@
+---
+title: "04_adding_external"
+output: html_document
+---
+
+```{r}
+# Scale Xreg
+xreg_ext_train <- scale(train_data %>%
+  select(daily_temp, daily_humidity))
+
+xreg_ext_valid <- scale(valid_data %>%
+  select(daily_temp, daily_humidity))
+```
+
+```{r}
+for (K_week in 1:2) {
+  for (K_year in 4:5) {
+
+    fourier_train <- fourier(ts_train_msts, K = c(K_week, K_year))
+    fourier_valid <- fourier(ts_train_msts, K = c(K_week, K_year), h = 31)
+
+    # combine Fourier + external regressors
+    xreg_train <- cbind(fourier_train, xreg_ext_train)
+    xreg_valid <- cbind(fourier_valid, xreg_ext_valid)
+
+    fit_try <- auto.arima(
+      ts_train_msts,
+      xreg = xreg_train,
+      seasonal = FALSE,
+      stepwise = TRUE,
+      approximation = TRUE,
+      lambda = "auto",
+      biasadj = TRUE
+    )
+
+    fc_try <- forecast(fit_try, xreg = xreg_valid, h = 31)
+
+    rmse_try <- rmse(valid_data$daily_avg, as.numeric(fc_try$mean))
+
+    if (rmse_try < best_dhr$rmse) {
+      best_dhr$rmse <- rmse_try
+      best_dhr$K_week <- K_week
+      best_dhr$K_year <- K_year
+      best_dhr$fit <- fit_try
+      best_dhr$fc <- fc_try
+    }
+  }
+}
+```
+
+```{r}
+xreg_ext_full <- full_train_data %>%
+  select(daily_temp, daily_humidity) %>%
+  as.matrix()
+```
+
+
+```{r}
+final_xreg_train <- cbind(
+  fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year)
+  ),
+  xreg_ext_full
+)
+
+final_xreg_future <- cbind(
+  fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year),
+    h = 31
+  ),
+  xreg_ext_full
+)
+
+final_fit <- auto.arima(
+  ts_full_msts,
+  xreg = final_xreg_train,
+  seasonal = FALSE,
+  stepwise = FALSE,
+  approximation = FALSE,
+  lambda = "auto",
+  biasadj = TRUE
+)
+
+final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
+```
+
