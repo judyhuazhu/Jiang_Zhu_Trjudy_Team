@@ -1,0 +1,257 @@
+In this chunk, we test basic models of TBATS,ETS and Dynamic harmonic regression with ARIMA errors using Fourier terms for weekly + yearly seasonality
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(readr)
+
+# load processed data
+source("Scripts/01_read_all_data.R")
+```
+
+```{r}
+# 2) Split data exactly as requested
+train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2010-06-30"))
+
+valid_data <- data_all %>%
+  filter(date >= as.Date("2010-07-01"),
+         date <= as.Date("2010-07-31"))
+
+full_train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2011-06-30"))
+```
+
+```{r include=FALSE}
+# 3) Create time series objects
+# Multiple seasonality: weekly + annual
+ts_train_msts <- msts(
+  train_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+ts_valid_msts <- msts(
+  valid_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+ts_full_msts <- msts(
+  full_train_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+# quick plot
+autoplot(ts_train_msts) +
+  ggtitle("Training Daily Electricity Load")
+```
+
+```{r}
+# 4) Validation metric helper, only mape is required but rmse created for reference
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2, na.rm = TRUE))
+}
+
+mape <- function(actual, predicted) {
+  mean(abs((actual - predicted) / actual), na.rm = TRUE) * 100
+}
+```
+
+```{r}
+# 5) Model 1: TBATS (tuned)
+fit_tbats <- tbats(
+  ts_train_msts,
+  use.box.cox = NULL,
+  use.trend = TRUE,
+  use.damped.trend = TRUE,
+  seasonal.periods = c(7, 365.25)
+)
+
+fc_tbats <- forecast(fit_tbats, h = 31)
+```
+
+```{r}
+# 6) Model 2: ETS+STL
+fit_stlf <- stlf(
+  ts_train_msts,
+  method = "ets",
+  lambda = "auto",
+  biasadj = TRUE,
+  s.window = "periodic"
+)
+
+fc_stlf <- forecast(fit_stlf, h = 31)
+```
+
+```{r}
+# 7) Model 3: ARIMA + Fourier
+#    Tune Fourier terms using validation RMSE
+best_dhr <- list(
+  rmse = Inf,
+  K_week = NA,
+  K_year = NA,
+  fit = NULL,
+  fc = NULL
+)
+```
+
+```{r}
+# search grid; keep it moderate so runtime stays reasonable
+for (K_week in 1:2) {
+  for (K_year in 3:6) {
+    xreg_train <- fourier(ts_train_msts, K = c(K_week, K_year))
+    xreg_valid <- fourier(ts_train_msts, K = c(K_week, K_year), h = 31)
+
+    fit_try <- auto.arima(
+      ts_train_msts,
+      xreg = xreg_train,
+      seasonal = FALSE,          # seasonality handled by Fourier terms
+      stepwise = TRUE,
+      approximation = TRUE,
+      lambda = "auto",
+      biasadj = TRUE
+    )
+
+    fc_try <- forecast(fit_try, xreg = xreg_valid, h = 31)
+
+    rmse_try <- rmse(valid_data$daily_avg, as.numeric(fc_try$mean))
+
+    if (rmse_try < best_dhr$rmse) {
+      best_dhr$rmse <- rmse_try
+      best_dhr$K_week <- K_week
+      best_dhr$K_year <- K_year
+      best_dhr$fit <- fit_try
+      best_dhr$fc <- fc_try
+    }
+  }
+}
+```
+
+```{r}
+# 8) Compare validation performance
+results <- tibble(
+  model = c("TBATS", "ETS+STL", "ARIMA+Fourier"),
+  RMSE = c(
+    rmse(valid_data$daily_avg, as.numeric(fc_tbats$mean)),
+    rmse(valid_data$daily_avg, as.numeric(fc_stlf$mean)),
+    rmse(valid_data$daily_avg, as.numeric(best_dhr$fc$mean))
+  ),
+  MAPE = c(
+    mape(valid_data$daily_avg, as.numeric(fc_tbats$mean)),
+    mape(valid_data$daily_avg, as.numeric(fc_stlf$mean)),
+    mape(valid_data$daily_avg, as.numeric(best_dhr$fc$mean))
+  )
+) %>%
+  arrange(RMSE)
+
+print(results)
+
+# plot best validation forecast
+best_model_name <- results$model[1]
+```
+
+```{r}
+if (best_model_name == "TBATS") {
+  best_fc_valid <- fc_tbats
+} else if (best_model_name == "ETS+S") {
+  best_fc_valid <- fc_stlf
+} else {
+  best_fc_valid <- best_dhr$fc
+}
+
+autoplot(best_fc_valid) +
+  autolayer(ts_valid_msts, series = "Actual") +
+  ggtitle(paste("Best Validation Forecast:", best_model_name))
+
+# 9) Retrain best model on full data through 2011-06-30
+h_final <- 31
+
+if (best_model_name == "TBATS") {
+
+  final_fit <- tbats(
+    ts_full_msts,
+    use.box.cox = NULL,
+    use.trend = TRUE,
+    use.damped.trend = TRUE,
+    seasonal.periods = c(7, 365.25)
+  )
+
+  final_fc <- forecast(final_fit, h = h_final)
+
+} else if (best_model_name == "ETS") {
+
+  ts_full_weekly <- ts(full_train_data$daily_avg, frequency = 7)
+  final_fit <- ets(ts_full_weekly)
+  final_fc <- forecast(final_fit, h = h_final)
+
+} else {
+
+  final_xreg_train <- fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year)
+  )
+
+  final_xreg_future <- fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year),
+    h = h_final
+  )
+
+  final_fit <- auto.arima(
+    ts_full_msts,
+    xreg = final_xreg_train,
+    seasonal = FALSE,
+    stepwise = FALSE,
+    approximation = FALSE,
+    lambda = "auto",
+    biasadj = TRUE
+  )
+
+  final_fc <- forecast(final_fit, xreg = final_xreg_future, h = h_final)
+}
+
+# 10) Build July 2011 forecast table
+forecast_dates <- seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day")
+
+forecast_output <- tibble(
+  date = forecast_dates,
+  forecast = as.numeric(final_fc$mean)
+)
+
+print(forecast_output)
+
+# 11) Match Kaggle submission template
+template_path <- "Output/submission_template.csv"
+template <- read_csv(template_path, show_col_types = FALSE)
+
+print(names(template))
+
+# Try to match the template automatically
+submission <- template
+
+
+if (ncol(template) == 2) {
+  submission[[1]] <- forecast_output$date
+  submission[[2]] <- forecast_output$forecast
+} else {
+  # if more columns exist, update likely prediction column
+  date_col <- names(template)[str_detect(names(template), regex("date|id", ignore_case = TRUE))]
+  pred_col <- names(template)[str_detect(names(template), regex("forecast|demand|load|prediction", ignore_case = TRUE))]
+
+  if (length(date_col) >= 1) submission[[date_col[1]]] <- forecast_output$date
+  if (length(pred_col) >= 1) submission[[pred_col[1]]] <- forecast_output$forecast
+}
+
+# 12) Write submission file
+write_csv(submission, "Output/group_submission_july2011.csv")
+
+cat("\nSubmission file written to: Output/group_submission_july2011.csv\n")
+cat("Best validation model:", best_model_name, "\n")
+
+if (best_model_name == "DHR_ARIMA") {
+  cat("Chosen Fourier terms: weekly K =", best_dhr$K_week,
+      ", yearly K =", best_dhr$K_year, "\n")
+}
+```
+
