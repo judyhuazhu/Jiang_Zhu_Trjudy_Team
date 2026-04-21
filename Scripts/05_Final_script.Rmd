@@ -4,6 +4,7 @@ author: Judy Hua Zhu, Trudy Jiang
 output: html_document
 date: "2026-04-21"
 ---
+GitHub Repository link: "https://github.com/judyhuazhu/Jiang_Zhu_Trjudy_Team.git"
 
 # 01 read all data
 ```{r}
@@ -16,7 +17,7 @@ temp <- read_excel("Data/temperature.xlsx")
 humidity <- read_excel("Data/relative_humidity.xlsx")
 ```
 
-```{r}
+```{r eval=FALSE}
 # check structure
 str(load)
 str(temp)
@@ -133,7 +134,7 @@ autoplot(ts_train_msts) +
   ggtitle("Training Daily Electricity Load")
 ```
 
-```{r}
+```{r eval=FALSE}
 # baseline model: TBATS
 fit_tbats <- tbats(ts_train_msts)
 
@@ -149,7 +150,7 @@ autoplot(fc_tbats) +
 accuracy(as.numeric(fc_tbats$mean), valid_data$daily_avg)
 ```
 
-```{r}
+```{r eval=FALSE}
 # current MAPE is 11.31%, retrain on all data and generate one sample submission
 full_train_data <- data_all %>%
   filter(date >= as.Date("2005-01-01"),
@@ -170,7 +171,7 @@ final_fit <- tbats(
 final_fc <- forecast(final_fit, h = 31)
 ```
 
-```{r}
+```{r eval=FALSE}
 # build submission file
 
 submission <- data.frame(
@@ -212,7 +213,7 @@ full_train_data <- data_all %>%
          date <= as.Date("2011-06-30"))
 ```
 
-```{r include=FALSE}
+```{r}
 # 3) Create time series objects
 # Multiple seasonality: weekly + annual
 ts_train_msts <- msts(
@@ -246,7 +247,7 @@ mape <- function(actual, predicted) {
 }
 ```
 
-```{r}
+```{r eval=FALSE}
 # 5) Model 1: TBATS (tuned)
 fit_tbats <- tbats(
   ts_train_msts,
@@ -259,7 +260,7 @@ fit_tbats <- tbats(
 fc_tbats <- forecast(fit_tbats, h = 31)
 ```
 
-```{r}
+```{r eval=FALSE}
 # 6) Model 2: ETS+STL
 fit_stlf <- stlf(
   ts_train_msts,
@@ -284,7 +285,7 @@ best_dhr <- list(
 )
 ```
 
-```{r}
+```{r eval=FALSE}
 # search grid; keep it moderate so runtime stays reasonable
 for (K_week in 1:2) {
   for (K_year in 3:6) {
@@ -316,7 +317,7 @@ for (K_week in 1:2) {
 }
 ```
 
-```{r}
+```{r eval=FALSE}
 # 8) Compare validation performance
 results <- tibble(
   model = c("TBATS", "ETS+STL", "ARIMA+Fourier"),
@@ -338,7 +339,8 @@ print(results)
 # plot best validation forecast
 best_model_name <- results$model[1]
 ```
-```{r}
+
+```{r eval=FALSE}
 # ARIMA + Fourier is performing the best
   final_xreg_train <- fourier(
     ts_full_msts,
@@ -364,7 +366,7 @@ best_model_name <- results$model[1]
 final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
 ```
 
-```{r}
+```{r eval=FALSE}
 # build submission file
 submission <- data.frame(
   date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
@@ -390,7 +392,7 @@ xreg_ext_valid <- scale(valid_data %>%
   select(daily_temp, daily_humidity))
 ```
 
-```{r}
+```{r eval=FALSE}
 for (K_week in 1:2) {
   for (K_year in 4:5) {
 
@@ -426,13 +428,13 @@ for (K_week in 1:2) {
 }
 ```
 
-```{r}
+```{r eval=FALSE}
 xreg_ext_full <- full_train_data %>%
   select(daily_temp, daily_humidity) %>%
   as.matrix()
 ```
 
-```{r}
+```{r eval=FALSE}
 final_xreg_train <- cbind(
   fourier(
     ts_full_msts,
@@ -462,6 +464,25 @@ final_fit <- auto.arima(
 
 final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
 ```
+
+
+# 05 model comparison
+
+| Model | Score / Status | Notes |
+|---|---|---|
+| ARIMA + Fourier | Kaggle 0.0960 | Best submitted model |
+| Basic TBATS | Kaggle 0.0980 | Baseline benchmark |
+| ETS + STL | Validation tested | Seasonal benchmark |
+| ARIMA + Fourier + External Regressors | Validation tested | Temp + humidity included |
+| Vanilla baseline | Instructor benchmark | Starting model |
+
+
+# 06 conclusion
+Among the models tested, ARIMA with Fourier terms achieved the best Kaggle public score among submitted models. TBATS also performed competitively as a benchmark model. External regressors such as temperature and humidity were explored during development, but were not included in the final submitted model.
+
+
+# 07 AI Usage Statement
+AI tools were used to assist with debugging R code, improving workflow efficiency, and editing report presentation. All model selection, implementation, and interpretation were completed by the authors.
 
 
 
