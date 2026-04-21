@@ -1,0 +1,471 @@
+---
+title: "05_Final_script"
+author: Judy Hua Zhu, Trudy Jiang
+output: html_document
+date: "2026-04-21"
+---
+
+# 01 read all data
+```{r}
+library(readxl)
+library(tidyverse)
+library(here)
+read_excel(here("Data", "load.xlsx"))
+load <- read_excel("Data/load.xlsx")
+temp <- read_excel("Data/temperature.xlsx")
+humidity <- read_excel("Data/relative_humidity.xlsx")
+```
+
+```{r}
+# check structure
+str(load)
+str(temp)
+str(humidity)
+
+# check first few rows
+head(load)
+head(temp)
+head(humidity)
+```
+
+```{r}
+# process load to daily average
+daily_load <- load %>%
+  mutate(
+    date = as.Date(date),
+    daily_avg = rowMeans(select(., starts_with("h")), na.rm = TRUE)
+  ) %>%
+  select(date, daily_avg)
+
+head(daily_load)
+str(daily_load)
+
+# process temperature
+daily_temp <- temp %>%
+  mutate(
+    date = as.Date(date),
+    temp_avg_hour = rowMeans(select(., starts_with("t_ws")), na.rm = TRUE)
+  ) %>%
+  group_by(date) %>%
+  summarise(daily_temp = mean(temp_avg_hour, na.rm = TRUE)) %>%
+  ungroup()
+
+head(daily_temp)
+str(daily_temp)
+
+# process humidity
+daily_humidity <- humidity %>%
+  mutate(
+    date = as.Date(date),
+    humidity_avg_hour = rowMeans(select(., starts_with("rh_ws")), na.rm = TRUE)
+  ) %>%
+  group_by(date) %>%
+  summarise(daily_humidity = mean(humidity_avg_hour, na.rm = TRUE)) %>%
+  ungroup()
+
+head(daily_humidity)
+str(daily_humidity)
+
+# check NA in temp
+sum(is.na(daily_temp$date))
+
+# inspect problematic rows
+daily_temp %>%
+  filter(is.na(date))
+
+daily_temp <- daily_temp %>%
+  filter(!is.na(date))
+
+sum(is.na(daily_temp$date))
+range(daily_temp$date)
+dim(daily_temp)
+```
+
+```{r}
+# merge all datasets
+data_all <- daily_load %>%
+  left_join(daily_temp, by = "date") %>%
+  left_join(daily_humidity, by = "date")
+
+head(data_all)
+str(data_all)
+colSums(is.na(data_all))
+```
+
+
+# 02 exploratory analysis
+```{r}
+library(tidyverse)
+library(forecast)
+```
+
+```{r}
+# load processed data
+source("Scripts/01_read_all_data.R")
+
+# split data based on instructor prompt
+train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01") &
+           date <= as.Date("2010-06-30"))
+
+valid_data <- data_all %>%
+  filter(date >= as.Date("2010-07-01") &
+           date <= as.Date("2010-07-31"))
+```
+
+```{r}
+# create msts object for training data
+ts_train_msts <- msts(
+  train_data$daily_avg,
+  seasonal.periods = c(7, 365)
+)
+```
+
+```{r}
+# validation series only for plotting
+ts_valid_msts <- msts(
+  valid_data$daily_avg,
+  seasonal.periods = c(7, 365)
+)
+
+# quick plot of training series
+autoplot(ts_train_msts) +
+  ggtitle("Training Daily Electricity Load")
+```
+
+```{r}
+# baseline model: TBATS
+fit_tbats <- tbats(ts_train_msts)
+
+# forecast 31 days for validation period
+fc_tbats <- forecast(fit_tbats, h = 31)
+
+# plot forecast vs actual validation data
+autoplot(fc_tbats) +
+  autolayer(ts_valid_msts, series = "Actual") +
+  ggtitle("TBATS Forecast vs Actuals")
+
+# accuracy on validation set
+accuracy(as.numeric(fc_tbats$mean), valid_data$daily_avg)
+```
+
+```{r}
+# current MAPE is 11.31%, retrain on all data and generate one sample submission
+full_train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2011-06-30"))
+
+ts_full_msts <- msts(
+  full_train_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+final_fit <- tbats(
+  ts_full_msts,
+  use.box.cox = NULL,
+  use.trend = TRUE,
+  use.damped.trend = TRUE
+)
+
+final_fc <- forecast(final_fit, h = 31)
+```
+
+```{r}
+# build submission file
+
+submission <- data.frame(
+  date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
+  load = as.numeric(final_fc$mean)
+)
+
+write.csv(
+  submission,
+  file = "Output/submission_basic_tbats.csv",
+  row.names = FALSE,
+  quote = TRUE
+)
+```
+
+
+# 03 basic models
+In this chunk, we test basic models of TBATS,ETS and Dynamic harmonic regression with ARIMA errors using Fourier terms for weekly + yearly seasonality
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(readr)
+library(here)
+```
+
+```{r}
+# 2) Split data exactly as requested
+train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2010-06-30"))
+
+valid_data <- data_all %>%
+  filter(date >= as.Date("2010-07-01"),
+         date <= as.Date("2010-07-31"))
+
+full_train_data <- data_all %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2011-06-30"))
+```
+
+```{r include=FALSE}
+# 3) Create time series objects
+# Multiple seasonality: weekly + annual
+ts_train_msts <- msts(
+  train_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+ts_valid_msts <- msts(
+  valid_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+ts_full_msts <- msts(
+  full_train_data$daily_avg,
+  seasonal.periods = c(7, 365.25)
+)
+
+# quick plot
+autoplot(ts_train_msts) +
+  ggtitle("Training Daily Electricity Load")
+```
+
+```{r}
+# 4) Validation metric helper, only mape is required but rmse created for reference
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2, na.rm = TRUE))
+}
+
+mape <- function(actual, predicted) {
+  mean(abs((actual - predicted) / actual), na.rm = TRUE) * 100
+}
+```
+
+```{r}
+# 5) Model 1: TBATS (tuned)
+fit_tbats <- tbats(
+  ts_train_msts,
+  use.box.cox = NULL,
+  use.trend = TRUE,
+  use.damped.trend = TRUE,
+  seasonal.periods = c(7, 365.25)
+)
+
+fc_tbats <- forecast(fit_tbats, h = 31)
+```
+
+```{r}
+# 6) Model 2: ETS+STL
+fit_stlf <- stlf(
+  ts_train_msts,
+  method = "ets",
+  lambda = "auto",
+  biasadj = TRUE,
+  s.window = "periodic"
+)
+
+fc_stlf <- forecast(fit_stlf, h = 31)
+```
+
+```{r}
+# 7) Model 3: ARIMA + Fourier
+#    Tune Fourier terms using validation RMSE
+best_dhr <- list(
+  rmse = Inf,
+  K_week = NA,
+  K_year = NA,
+  fit = NULL,
+  fc = NULL
+)
+```
+
+```{r}
+# search grid; keep it moderate so runtime stays reasonable
+for (K_week in 1:2) {
+  for (K_year in 3:6) {
+    xreg_train <- fourier(ts_train_msts, K = c(K_week, K_year))
+    xreg_valid <- fourier(ts_train_msts, K = c(K_week, K_year), h = 31)
+
+    fit_try <- auto.arima(
+      ts_train_msts,
+      xreg = xreg_train,
+      seasonal = FALSE,          # seasonality handled by Fourier terms
+      stepwise = TRUE,
+      approximation = TRUE,
+      lambda = "auto",
+      biasadj = TRUE
+    )
+
+    fc_try <- forecast(fit_try, xreg = xreg_valid, h = 31)
+
+    rmse_try <- rmse(valid_data$daily_avg, as.numeric(fc_try$mean))
+
+    if (rmse_try < best_dhr$rmse) {
+      best_dhr$rmse <- rmse_try
+      best_dhr$K_week <- K_week
+      best_dhr$K_year <- K_year
+      best_dhr$fit <- fit_try
+      best_dhr$fc <- fc_try
+    }
+  }
+}
+```
+
+```{r}
+# 8) Compare validation performance
+results <- tibble(
+  model = c("TBATS", "ETS+STL", "ARIMA+Fourier"),
+  RMSE = c(
+    rmse(valid_data$daily_avg, as.numeric(fc_tbats$mean)),
+    rmse(valid_data$daily_avg, as.numeric(fc_stlf$mean)),
+    rmse(valid_data$daily_avg, as.numeric(best_dhr$fc$mean))
+  ),
+  MAPE = c(
+    mape(valid_data$daily_avg, as.numeric(fc_tbats$mean)),
+    mape(valid_data$daily_avg, as.numeric(fc_stlf$mean)),
+    mape(valid_data$daily_avg, as.numeric(best_dhr$fc$mean))
+  )
+) %>%
+  arrange(RMSE)
+
+print(results)
+
+# plot best validation forecast
+best_model_name <- results$model[1]
+```
+```{r}
+# ARIMA + Fourier is performing the best
+  final_xreg_train <- fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year)
+  )
+
+  final_xreg_future <- fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year),
+    h = h_final
+  )
+
+  final_fit <- auto.arima(
+    ts_full_msts,
+    xreg = final_xreg_train,
+    seasonal = FALSE,
+    stepwise = FALSE,
+    approximation = FALSE,
+    lambda = "auto",
+    biasadj = TRUE
+  )
+
+final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
+```
+
+```{r}
+# build submission file
+submission <- data.frame(
+  date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
+  load = as.numeric(final_fc$mean)
+)
+
+write.csv(
+  submission,
+  file = here("Output", "submission_arima_fourier.csv"),
+  row.names = FALSE,
+  quote = TRUE
+)
+```
+
+
+# 04 adding external
+```{r}
+# Scale Xreg
+xreg_ext_train <- scale(train_data %>%
+  select(daily_temp, daily_humidity))
+
+xreg_ext_valid <- scale(valid_data %>%
+  select(daily_temp, daily_humidity))
+```
+
+```{r}
+for (K_week in 1:2) {
+  for (K_year in 4:5) {
+
+    fourier_train <- fourier(ts_train_msts, K = c(K_week, K_year))
+    fourier_valid <- fourier(ts_train_msts, K = c(K_week, K_year), h = 31)
+
+    # combine Fourier + external regressors
+    xreg_train <- cbind(fourier_train, xreg_ext_train)
+    xreg_valid <- cbind(fourier_valid, xreg_ext_valid)
+
+    fit_try <- auto.arima(
+      ts_train_msts,
+      xreg = xreg_train,
+      seasonal = FALSE,
+      stepwise = TRUE,
+      approximation = TRUE,
+      lambda = "auto",
+      biasadj = TRUE
+    )
+
+    fc_try <- forecast(fit_try, xreg = xreg_valid, h = 31)
+
+    rmse_try <- rmse(valid_data$daily_avg, as.numeric(fc_try$mean))
+
+    if (rmse_try < best_dhr$rmse) {
+      best_dhr$rmse <- rmse_try
+      best_dhr$K_week <- K_week
+      best_dhr$K_year <- K_year
+      best_dhr$fit <- fit_try
+      best_dhr$fc <- fc_try
+    }
+  }
+}
+```
+
+```{r}
+xreg_ext_full <- full_train_data %>%
+  select(daily_temp, daily_humidity) %>%
+  as.matrix()
+```
+
+```{r}
+final_xreg_train <- cbind(
+  fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year)
+  ),
+  xreg_ext_full
+)
+
+final_xreg_future <- cbind(
+  fourier(
+    ts_full_msts,
+    K = c(best_dhr$K_week, best_dhr$K_year),
+    h = 31
+  ),
+  xreg_ext_full
+)
+
+final_fit <- auto.arima(
+  ts_full_msts,
+  xreg = final_xreg_train,
+  seasonal = FALSE,
+  stepwise = FALSE,
+  approximation = FALSE,
+  lambda = "auto",
+  biasadj = TRUE
+)
+
+final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
+```
+
+
+
+
+
+
+
