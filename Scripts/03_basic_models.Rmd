@@ -157,7 +157,6 @@ fc_ens_best <- best_ens$w * best_dhr$fc$mean +
 
 ```{r}
 # 8) Compare validation performance
-fc_ens <- 0.5 * best_dhr$fc$mean + 0.5 * fc_tbats$mean
 results <- tibble(
   model = c("TBATS", "ETS+STL", "ARIMA+Fourier", "TBATS+ARIMA(Fourier)"),
   RMSE = c(
@@ -219,6 +218,10 @@ final_fc_ens <- w * final_fc_arima$mean +
                 (1 - w) * final_fc_tbats$mean
 ```
 
+```{r}
+fit_tbats_full <- tbats(ts_full_msts, use.box.cox=TRUE)
+fc_tbats_full <- forecast(fit_tbats_full, h=31)
+```
 
 
 
@@ -226,12 +229,12 @@ final_fc_ens <- w * final_fc_arima$mean +
 # build submission file
 submission <- data.frame(
   date = seq(as.Date("2011-07-01"), as.Date("2011-07-31"), by = "day"),
-  load = final_fc_ens
+  load = as.numeric(fc_tbats_full$mean)
 )
 
 write.csv(
   submission,
-  file = here("Output", "submission_ensemble.csv"),
+  file = here("Output", "submission_full_tbats.csv"),
   row.names = FALSE,
   quote = TRUE
 )
