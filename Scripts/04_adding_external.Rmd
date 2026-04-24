@@ -2,87 +2,301 @@
 title: "04_adding_external"
 output: html_document
 ---
-
-```{r}
-# Scale Xreg
-xreg_ext_train <- scale(train_data %>%
-  select(daily_temp, daily_humidity))
-
-xreg_ext_valid <- scale(valid_data %>%
-  select(daily_temp, daily_humidity))
+```{r include=FALSE}
+library(readxl)
+library(tidyverse)
+library(here)
+library(lubridate)
+library(forecast)
+library(readr)
 ```
 
 ```{r}
-for (K_week in 1:2) {
-  for (K_year in 4:5) {
+library(readxl); library(tidyverse); library(forecast); library(lubridate)
 
-    fourier_train <- fourier(ts_train_msts, K = c(K_week, K_year))
-    fourier_valid <- fourier(ts_train_msts, K = c(K_week, K_year), h = 31)
+rmse <- function(a,p) sqrt(mean((a-p)^2,na.rm=TRUE))
+mape <- function(a,p) mean(abs((a-p)/a),na.rm=TRUE)*100
 
-    # combine Fourier + external regressors
-    xreg_train <- cbind(fourier_train, xreg_ext_train)
-    xreg_valid <- cbind(fourier_valid, xreg_ext_valid)
+scale_tv <- function(tr,va){
+  m <- colMeans(tr,na.rm=TRUE); s <- apply(tr,2,sd,na.rm=TRUE)
+  list(tr=scale(tr,m,s), va=scale(va,m,s), m=m, s=s)
+}
 
-    fit_try <- auto.arima(
-      ts_train_msts,
-      xreg = xreg_train,
-      seasonal = FALSE,
-      stepwise = TRUE,
-      approximation = TRUE,
-      lambda = "auto",
-      biasadj = TRUE
-    )
+tune_dhr <- function(y, actual, h){
+  best <- list(rmse=Inf,mape=Inf,Kw=NA,Ky=NA,fc=NULL)
+  for(Kw in 1:2) for(Ky in 2:5){
+    xr_tr <- fourier(y,K=c(Kw,Ky)); xr_fc <- fourier(y,K=c(Kw,Ky),h=h)
+    fit <- auto.arima(y,xreg=xr_tr,seasonal=FALSE,stepwise=TRUE,approximation=TRUE,lambda="auto",biasadj=TRUE)
+    fc <- forecast(fit,xreg=xr_fc,h=h)
+    r <- rmse(actual,fc$mean); m <- mape(actual,fc$mean)
+    if(r<best$rmse) best <- list(rmse=r,mape=m,Kw=Kw,Ky=Ky,fc=fc)
+  }
+  best
+}
 
-    fc_try <- forecast(fit_try, xreg = xreg_valid, h = 31)
+load <- read_excel("../Data/load.xlsx")
+temp <- read_excel("../Data/temperature.xlsx")
+hum  <- read_excel("../Data/relative_humidity.xlsx")
 
-    rmse_try <- rmse(valid_data$daily_avg, as.numeric(fc_try$mean))
+dl <- load %>% mutate(date=as.Date(date),y=rowMeans(select(.,starts_with("h")),na.rm=TRUE)) %>% select(date,y)
+dt <- temp %>% mutate(date=as.Date(date),x=rowMeans(select(.,starts_with("t_ws")),na.rm=TRUE)) %>% group_by(date) %>% summarise(temp=mean(x,na.rm=TRUE),.groups="drop") %>% filter(!is.na(date))
+dh <- hum  %>% mutate(date=as.Date(date),x=rowMeans(select(.,starts_with("rh_ws")),na.rm=TRUE)) %>% group_by(date) %>% summarise(hum=mean(x,na.rm=TRUE),.groups="drop") %>% filter(!is.na(date))
 
-    if (rmse_try < best_dhr$rmse) {
-      best_dhr$rmse <- rmse_try
-      best_dhr$K_week <- K_week
-      best_dhr$K_year <- K_year
-      best_dhr$fit <- fit_try
-      best_dhr$fc <- fc_try
-    }
+df <- dl %>% left_join(dt,"date") %>% left_join(dh,"date") %>% arrange(date)
+
+tr <- df %>% filter(date>=as.Date("2005-01-01"),date<=as.Date("2010-06-30"))
+va <- df %>% filter(date>=as.Date("2010-07-01"),date<=as.Date("2010-07-31"))
+
+ts_y <- msts(tr$y,seasonal.periods=c(7,365.25))
+ts_t <- msts(tr$temp,seasonal.periods=c(7,365.25))
+ts_h <- msts(tr$hum,seasonal.periods=c(7,365.25))
+
+h <- nrow(va)
+
+bt <- tune_dhr(ts_t,va$temp,h); bh <- tune_dhr(ts_h,va$hum,h)
+
+w_sc <- scale_tv(tr %>% select(temp,hum), va %>% select(temp,hum))
+x_tr <- w_sc$tr
+x_va_act <- w_sc$va
+
+va_fc <- tibble(temp=bt$fc$mean,hum=bh$fc$mean)
+x_va_fc <- scale(as.matrix(va_fc),w_sc$m,w_sc$s)
+
+best_act <- list(rmse=Inf,mape=Inf)
+best_fc  <- list(rmse=Inf,mape=Inf)
+
+keep_tr <- complete.cases(tr[, c("y","temp","hum")])
+tr2 <- tr[keep_tr, ]
+
+keep_va <- complete.cases(va[, c("y","temp","hum")])
+va2 <- va[keep_va, ]
+
+ts_y <- msts(tr2$y, seasonal.periods = c(7, 365.25))
+ts_t <- msts(tr2$temp, seasonal.periods = c(7, 365.25))
+ts_h <- msts(tr2$hum, seasonal.periods = c(7, 365.25))
+
+h <- nrow(va2)
+for(Kw in 1:1) for(Ky in 2:4){
+  f_tr <- fourier(ts_y,K=c(Kw,Ky))
+  f_va <- fourier(ts_y,K=c(Kw,Ky),h=h)
+
+  fit <- try(auto.arima(ts_y,
+    xreg=cbind(f_tr,x_tr),
+    seasonal=FALSE,stepwise=TRUE,approximation=TRUE,
+    lambda="auto",biasadj=TRUE
+  ), silent=TRUE)
+
+  if(inherits(fit,"try-error")) next
+
+  fc1 <- forecast(fit,xreg=cbind(f_va,x_va_act),h=h)
+  r1 <- rmse(va$y,fc1$mean); m1 <- mape(va$y,fc1$mean)
+  if(r1<best_act$rmse) best_act <- list(rmse=r1,mape=m1)
+
+  fc2 <- forecast(fit,xreg=cbind(f_va,x_va_fc),h=h)
+  r2 <- rmse(va$y,fc2$mean); m2 <- mape(va$y,fc2$mean)
+  if(r2<best_fc$rmse) best_fc <- list(rmse=r2,mape=m2)
+}
+tibble(
+  model=c("ARIMA + Fourier + Actual Temp/Humidity","ARIMA + Fourier + Forecasted Temp/Humidity"),
+  RMSE=c(best_act$rmse,best_fc$rmse),
+  MAPE=c(best_act$mape,best_fc$mape)
+) %>% arrange(RMSE) %>% print()
+```
+```{r}
+# only try forecasted temp below
+rmse <- function(a,p) sqrt(mean((a-p)^2,na.rm=TRUE))
+mape <- function(a,p) mean(abs((a-p)/a),na.rm=TRUE)*100
+
+scale_tv1 <- function(tr,va){
+  m <- mean(tr,na.rm=TRUE); s <- sd(tr,na.rm=TRUE)
+  list(tr=scale(tr,m,s)[,1], va=scale(va,m,s)[,1], m=m, s=s)
+}
+
+tune_dhr <- function(y, actual, h){
+  best <- list(rmse=Inf,mape=Inf,Kw=NA,Ky=NA,fc=NULL)
+  for(Kw in 1:2) for(Ky in 2:5){
+    xr_tr <- fourier(y,K=c(Kw,Ky)); xr_fc <- fourier(y,K=c(Kw,Ky),h=h)
+    fit <- try(auto.arima(y,xreg=xr_tr,seasonal=FALSE,stepwise=TRUE,approximation=TRUE,lambda="auto",biasadj=TRUE),silent=TRUE)
+    if(inherits(fit,"try-error")) next
+    fc <- forecast(fit,xreg=xr_fc,h=h)
+    r <- rmse(actual,fc$mean); m <- mape(actual,fc$mean)
+    if(r<best$rmse) best <- list(rmse=r,mape=m,Kw=Kw,Ky=Ky,fc=fc)
+  }
+  best
+}
+
+bt <- tune_dhr(ts_t,va$temp,h)
+
+sc <- scale_tv1(tr$temp, bt$fc$mean)
+x_tr <- sc$tr
+x_va <- sc$va
+
+best_base <- list(rmse=Inf,mape=Inf)
+best_temp <- list(rmse=Inf,mape=Inf)
+
+for(Kw in 1:2) for(Ky in 3:6){
+  f_tr <- fourier(ts_y,K=c(Kw,Ky))
+  f_va <- fourier(ts_y,K=c(Kw,Ky),h=h)
+
+  fit0 <- try(auto.arima(ts_y,xreg=f_tr,seasonal=FALSE,stepwise=TRUE,approximation=TRUE,lambda="auto",biasadj=TRUE),silent=TRUE)
+  if(!inherits(fit0,"try-error")){
+    fc0 <- forecast(fit0,xreg=f_va,h=h)
+    r0 <- rmse(va$y,fc0$mean); m0 <- mape(va$y,fc0$mean)
+    if(r0<best_base$rmse) best_base <- list(rmse=r0,mape=m0)
+  }
+
+  fit1 <- try(auto.arima(ts_y,xreg=cbind(f_tr,temp=x_tr),seasonal=FALSE,stepwise=TRUE,approximation=TRUE,lambda="auto",biasadj=TRUE),silent=TRUE)
+  if(!inherits(fit1,"try-error")){
+    fc1 <- forecast(fit1,xreg=cbind(f_va,temp=x_va),h=h)
+    r1 <- rmse(va$y,fc1$mean); m1 <- mape(va$y,fc1$mean)
+    if(r1<best_temp$rmse) best_temp <- list(rmse=r1,mape=m1)
   }
 }
+
+tibble(
+  model=c("ARIMA+Fourier","ARIMA+Fourier+Forecasted Temp"),
+  RMSE=c(best_base$rmse,best_temp$rmse),
+  MAPE=c(best_base$mape,best_temp$mape)
+) %>% arrange(RMSE) %>% print()
 ```
 
 ```{r}
-xreg_ext_full <- full_train_data %>%
-  select(daily_temp, daily_humidity) %>%
-  as.matrix()
+library(readxl); library(tidyverse); library(forecast)
+
+# ---------- helpers ----------
+rmse <- function(a,p) sqrt(mean((a-p)^2,na.rm=TRUE))
+mape <- function(a,p) mean(abs((a-p)/a),na.rm=TRUE)*100
+
+scale_df <- function(tr,va){
+  m <- colMeans(tr,na.rm=TRUE); s <- apply(tr,2,sd,na.rm=TRUE)
+  list(
+    tr=scale(as.matrix(tr),m,s),
+    va=scale(as.matrix(va),m,s),
+    m=m,s=s
+  )
+}
+
+tune_dhr <- function(y){
+  best <- list(rmse=Inf,Kw=NA,Ky=NA,fit=NULL)
+  for(Kw in 1:1) for(Ky in 2:4){
+    xr <- fourier(y,K=c(Kw,Ky))
+    fit <- try(auto.arima(y,xreg=xr,seasonal=FALSE,
+                          stepwise=TRUE,approximation=TRUE,
+                          lambda="auto",biasadj=TRUE),silent=TRUE)
+    if(inherits(fit,"try-error")) next
+    if(AIC(fit) < best$rmse) best <- list(rmse=AIC(fit),Kw=Kw,Ky=Ky,fit=fit)
+  }
+  best
+}
+
+# ---------- load data ----------
+dl <- load %>%
+  mutate(date=as.Date(date),
+         y=rowMeans(select(.,starts_with("h")),na.rm=TRUE)) %>%
+  select(date,y)
+
+dt <- temp %>%
+  mutate(date=as.Date(date),
+         x=rowMeans(select(.,starts_with("t_ws")),na.rm=TRUE)) %>%
+  group_by(date) %>%
+  summarise(temp=mean(x,na.rm=TRUE),.groups="drop")
+
+dh <- hum %>%
+  mutate(date=as.Date(date),
+         x=rowMeans(select(.,starts_with("rh_ws")),na.rm=TRUE)) %>%
+  group_by(date) %>%
+  summarise(hum=mean(x,na.rm=TRUE),.groups="drop")
+
+df <- dl %>%
+  left_join(dt,"date") %>%
+  left_join(dh,"date") %>%
+  arrange(date) %>%
+  drop_na()
+
+# ---------- full training (no validation now) ----------
+train <- df %>%
+  filter(date >= as.Date("2005-01-01"),
+         date <= as.Date("2011-06-30"))
+
+ts_y <- msts(train$y, seasonal.periods=c(7,365.25))
+ts_t <- msts(train$temp, seasonal.periods=c(7,365.25))
+ts_h <- msts(train$hum,  seasonal.periods=c(7,365.25))
+
+h <- 31
+
+# ---------- forecast temp & humidity ----------
+bt <- tune_dhr(ts_t)
+bh <- tune_dhr(ts_h)
+
+temp_fc <- forecast(
+  bt$fit,
+  xreg=fourier(ts_t,K=c(bt$Kw,bt$Ky),h=h),
+  h=h
+)$mean
+
+hum_fc <- forecast(
+  bh$fit,
+  xreg=fourier(ts_h,K=c(bh$Kw,bh$Ky),h=h),
+  h=h
+)$mean
+
+# ---------- scale external regressors ----------
+x_train_raw <- train %>% select(temp,hum)
+x_future_raw <- cbind(temp=temp_fc,hum=hum_fc)
+
+sc <- scale_df(x_train_raw, x_future_raw)
+x_tr <- sc$tr
+x_fc <- sc$va
+
+# ---------- Fourier for load ----------
+best <- list(rmse=Inf,Kw=NA,Ky=NA)
+
+for(Kw in 1:1) for(Ky in 2:4){
+  f_tr <- fourier(ts_y,K=c(Kw,Ky))
+  
+  fit <- try(auto.arima(ts_y,
+                        xreg=cbind(f_tr,x_tr),
+                        seasonal=FALSE,
+                        stepwise=TRUE,
+                        approximation=TRUE,
+                        lambda="auto",
+                        biasadj=TRUE),silent=TRUE)
+  
+  if(inherits(fit,"try-error")) next
+  
+  if(AIC(fit) < best$rmse){
+    best <- list(rmse=AIC(fit),Kw=Kw,Ky=Ky,fit=fit)
+  }
+}
+
+# ---------- final forecast ----------
+f_tr <- fourier(ts_y,K=c(best$Kw,best$Ky))
+f_fc <- fourier(ts_y,K=c(best$Kw,best$Ky),h=h)
+
+xreg_tr <- cbind(f_tr,x_tr)
+xreg_fc <- cbind(f_fc,x_fc)
+colnames(xreg_fc) <- colnames(xreg_tr)
+
+final_fit <- auto.arima(ts_y,
+                        xreg=xreg_tr,
+                        seasonal=FALSE,
+                        stepwise=FALSE,
+                        approximation=FALSE,
+                        lambda="auto",
+                        biasadj=TRUE)
+
+final_fc <- forecast(final_fit, xreg=xreg_fc, h=h)
+
+# ---------- submission ----------
+submission <- tibble(
+  date = seq(as.Date("2011-07-01"),
+             as.Date("2011-07-31"),
+             by="day"),
+  load = as.numeric(final_fc$mean)
+)
+
+write.csv(submission,"submission_arima_fourier_weather.csv",row.names=FALSE)
 ```
 
 
-```{r}
-final_xreg_train <- cbind(
-  fourier(
-    ts_full_msts,
-    K = c(best_dhr$K_week, best_dhr$K_year)
-  ),
-  xreg_ext_full
-)
-
-final_xreg_future <- cbind(
-  fourier(
-    ts_full_msts,
-    K = c(best_dhr$K_week, best_dhr$K_year),
-    h = 31
-  ),
-  xreg_ext_full
-)
-
-final_fit <- auto.arima(
-  ts_full_msts,
-  xreg = final_xreg_train,
-  seasonal = FALSE,
-  stepwise = FALSE,
-  approximation = FALSE,
-  lambda = "auto",
-  biasadj = TRUE
-)
-
-final_fc <- forecast(final_fit, xreg = final_xreg_future, h = 31)
-```
 

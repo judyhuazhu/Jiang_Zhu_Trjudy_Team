@@ -1,3 +1,8 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
 In this chunk, we test basic models of TBATS,ETS and Dynamic harmonic regression with ARIMA errors using Fourier terms for weekly + yearly seasonality
 ```{r include=FALSE}
 library(tidyverse)
@@ -5,10 +10,15 @@ library(lubridate)
 library(forecast)
 library(readr)
 library(here)
+library(readxl)
 ```
 
 ```{r}
 # 2) Split data exactly as requested
+read_excel(here("Data", "load.xlsx"))
+load <- read_excel("../Data/load.xlsx")
+temp <- read_excel("../Data/temperature.xlsx")
+humidity <- read_excel("../Data/relative_humidity.xlsx")
 train_data <- data_all %>%
   filter(date >= as.Date("2005-01-01"),
          date <= as.Date("2010-06-30"))
@@ -97,7 +107,7 @@ best_dhr <- list(
 ```{r}
 # search grid; keep it moderate so runtime stays reasonable
 for (K_week in 1:2) {
-  for (K_year in 3:6) {
+  for (K_year in 2:6) {
     xreg_train <- fourier(ts_train_msts, K = c(K_week, K_year))
     xreg_valid <- fourier(ts_train_msts, K = c(K_week, K_year), h = 31)
 
@@ -105,8 +115,8 @@ for (K_week in 1:2) {
       ts_train_msts,
       xreg = xreg_train,
       seasonal = FALSE,          # seasonality handled by Fourier terms
-      stepwise = TRUE,
-      approximation = TRUE,
+      stepwise = FALSE,
+      approximation = FALSE,
       lambda = "auto",
       biasadj = TRUE
     )
